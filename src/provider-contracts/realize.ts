@@ -5,7 +5,7 @@ import { DATA_DIR } from '../config.js';
 import { materializeTemplateSkills } from '../group-skills.js';
 import { log } from '../log.js';
 import { claudeSettingsTransformer, writeAtomic } from '../migrate-claude-memory-settings.js';
-import type { ProjectDocSpec } from '../project-doc-compose.js';
+import { BASE_INSTRUCTIONS_PATH, type ProjectDocSpec } from '../project-doc-compose.js';
 
 import {
   listProviderHostContracts,
@@ -17,23 +17,36 @@ import {
   type ProviderStateVolume,
 } from './registry.js';
 
-export function protectedProviderDocumentSourcePaths(projectRoot: string): string[] {
-  const documentsRoot = path.resolve(projectRoot, 'container');
-  return listProviderHostContracts().flatMap((contract) => {
-    if (contract.projectDocument === undefined) return [];
-    const { baseDocumentFile, sourceProtection } = contract.projectDocument;
-    return sourceProtection === 'install-surface' ? [resolveWithinRoot(documentsRoot, baseDocumentFile)] : [];
-  });
+/**
+ * The host file a contract's project document is rendered from. Every
+ * contract renders from core's canonical instruction template; a contract
+ * declares facts for it, never a document of its own.
+ */
+export function providerDocumentSourcePath(projectRoot: string, contract: ProviderHostContract): string | undefined {
+  if (contract.projectDocument === undefined) return undefined;
+  return path.resolve(projectRoot, BASE_INSTRUCTIONS_PATH);
+}
+
+/** Document sources of every contract asking for install-surface protection, each resolved on its own. */
+export function protectedProviderDocumentSourcePaths(
+  projectRoot: string,
+  contracts: readonly ProviderHostContract[] = listProviderHostContracts(),
+): string[] {
+  const protectedPaths = new Set<string>();
+  for (const contract of contracts) {
+    if (contract.projectDocument?.sourceProtection !== 'install-surface') continue;
+    const source = providerDocumentSourcePath(projectRoot, contract);
+    if (source !== undefined) protectedPaths.add(source);
+  }
+  return [...protectedPaths];
 }
 
 export function providerProjectDocSpec(contract: ProviderHostContract): ProjectDocSpec | undefined {
   if (contract.projectDocument === undefined) return undefined;
-  const { fileName, baseDocumentFile, extraSections, maxBytes } = contract.projectDocument;
-  resolveWithinRoot(path.resolve(process.cwd(), 'container'), baseDocumentFile);
+  const { fileName, instructions, maxBytes } = contract.projectDocument;
   return {
     fileName,
-    baseDocPath: path.join('container', baseDocumentFile),
-    ...(extraSections ? { extraSections } : {}),
+    ...(instructions ? { instructions } : {}),
     ...(maxBytes === undefined ? {} : { maxBytes }),
   };
 }
