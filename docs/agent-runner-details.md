@@ -21,10 +21,6 @@ continuation token to resume, the working directory, and system context to injec
 
 ```typescript
 interface AgentProvider {
-  /** True if the SDK handles slash commands natively and wants them passed
-   *  through raw. When false, the poll-loop formats them like any chat message. */
-  readonly supportsNativeSlashCommands: boolean;
-
   /** Register shared memory through the provider's native session-start mechanism. */
   registerMemorySessionHook(hook: MemorySessionHookRegistration): void;
 
@@ -113,6 +109,44 @@ type ProviderEvent =
 - **`progress`** — optional, for logging. The agent-runner logs these but doesn't act on them.
 - **`activity`** — a liveness signal. Providers MUST yield it on every underlying SDK event (tool call, thinking, partial message) so the poll-loop's idle timer stays honest during long tool runs.
 
+## Runtime provider contract
+
+Besides implementing `AgentProvider`, every provider declares a **runtime contract**
+(`container/agent-runner/src/provider-contracts/`). The contract is not a description
+core reads once and forgets — each field is consumed by core at a specific moment.
+
+What a provider declares:
+
+- `configuration` — `executionPolicy` (mandatory), and optionally `inference`, `memory`,
+  `mcpServers`. Each is either a fixed `value` or a `resolve(input, env)` function.
+  **Core calls the resolves, not the provider.** `createProvider` resolves
+  `executionPolicy`, `inference` and `mcpServers` and passes the result to the provider
+  factory as its second argument; `memory` is resolved when core registers the memory
+  session hook and passed as the second argument of `registerMemorySessionHook`.
+- `lifecycle` / `history` — provider-owned callbacks (memory hook file write, pre-compact
+  archive, exchange archive, continuation rotation, trace lookup). Core decides when to
+  call them; the factory wraps `onExchangeComplete` and `maybeRotateContinuation` so the
+  provider class does not implement those itself.
+- `textDelivery`, `compaction`, `commands` — read by the poll-loop and formatter.
+
+Registration is **two-step** and order-independent. The provider module calls
+`registerProvider(name, factory)`; the contract module calls
+`registerProviderContract(name, contract)`. Neither file imports the other, so a
+skill-installed provider still compiles on a core that predates the contract seam (the
+contract file is simply not imported there). Barrels: `providers/index.ts` and
+`provider-contracts/index.ts` — a skill appends one import line to each. Claude and the
+test-double `mock` register exactly this way; no provider is special-cased.
+
+A provider without a contract keeps working: the poll-loop falls back to the legacy
+instance flags (`supportsNativeSlashCommands`, `emitsMidTurnText`).
+
+Conformance: `provider-contracts/testing/conformance.ts` exports
+`defineProviderConformance(name, contract)`, which registers the shape checks and the
+"does each resolve respond to its input" probes as `bun:test` cases. The in-tree
+`conformance.test.ts` runs it for every registered contract; a payload branch runs it for
+its own contract from its own test file. `bun src/provider-contracts/names.ts` lists
+registered providers and contracts.
+
 ## Provider Implementations
 
 Only the `claude` provider ships in trunk. The Codex and OpenCode sections below document the provider interface for reference and for skills that install additional providers — they are not baked into the core image.
@@ -127,7 +161,6 @@ only reads the per-turn `QueryInput`.
 
 ```typescript
 class ClaudeProvider implements AgentProvider {
-  readonly supportsNativeSlashCommands = true;
   // ...constructor stores options.mcpServers, .env, .additionalDirectories,
   //    .model, .effort, .assistantName...
 
